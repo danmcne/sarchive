@@ -1,12 +1,10 @@
 # sarchive.sh — safe archiving with version retention
 
-`sarchive.sh` supersedes `sbackup.sh`.
-
 `sarchive.sh` pushes files from a computer with limited disk space to an
 archive on an external drive or remote machine, using `rsync`. The archive
 accumulates: it holds the most recent version of everything ever pushed, plus
 every version that was ever superseded. Nothing in the archive is ever
-destroyed by the tool.
+destroyed by the tool, and no configuration can change that.
 
 ## The invariant
 
@@ -21,8 +19,8 @@ destroyed by the tool.
 Deleting a file from the source does **not** delete it from the archive.
 That is the purpose of the tool: you free local disk space precisely because
 the archive keeps the file. For the same reason, **never add `--delete` to
-this script** — it would delete exactly the files whose local deletion was
-the reason you archived them.
+this script**, and there is deliberately no config directive that deletes —
+a policy file must not be able to repeal the tool's one promise.
 
 Everything in the archive is an ordinary file. Restoring anything, browsing
 the history, or reading the archive twenty years from now requires no
@@ -31,44 +29,94 @@ software beyond a file manager or `cp`.
 ## Requirements
 
 - `rsync` ≥ 3.2.3 (for `--mkpath`)
-- `bash` ≥ 4.4
-- GNU coreutils (`sort`, `shuf`) — standard on Linux
+- `bash` ≥ 4.4, GNU coreutils — standard on Linux
 - `ssh`, for remote archives (optional)
+
+## Quick start
+
+```
+sarchive.sh -I /media/$USER/SSD/Dan        # once per archive, ever
+$EDITOR ~/.sarchive.conf                   # standing policy (see below)
+sarchive.sh ~ /media/$USER/SSD/Dan/home    # routine push: no flags needed
+```
 
 ## Initialising an archive root
 
-Before the first push, mark the archive root, once per archive:
-
-```
-sarchive.sh -I /media/$USER/SSD/bob
-```
-
-This writes a small `.sarchive` marker file (a few bytes, never grows, never
-rewritten) into the directory. The directory must already exist; `-I`
-creates nothing and transfers nothing. Marking is deliberately a separate
-command with a different shape — one path, no other flags — so it cannot be
+`-I` writes a small `.sarchive` marker (a few bytes, never rewritten) into
+the directory you name. The directory must already exist; `-I` creates
+nothing and transfers nothing, and it is deliberately a separate command
+with a different shape — one path, no other flags — so it cannot be
 habitually pasted into a normal push.
 
-The marker gives the root an identity. Every subsequent run refuses to
-proceed unless its destination lies at or below a marked root, which is what
-catches the three ways an archive silently goes wrong:
+Every run then refuses to proceed unless its destination lies at or below a
+marked root. This is what catches the three ways an archive silently goes
+wrong: **the drive isn't mounted** (an unmounted mountpoint is an existing
+empty directory with no marker in its ancestry, so the run refuses instead
+of quietly filling your local disk), **a typo'd destination**, and **the
+wrong directory**.
 
-- **the drive isn't mounted** — an unmounted mountpoint is an existing empty
-  directory, indistinguishable from your archive by name, but it has no
-  marker anywhere in its ancestry, so the run refuses instead of quietly
-  filling your local disk;
-- **a typo'd destination** — no marker, refused;
-- **the wrong directory** — no marker, refused.
+The root can be anywhere. On a shared drive, mark each person's directory,
+not the drive: marking `SSD/Dan` leaves `SSD/Mary` alone. If nested markers
+ever exist, the nearest one above the destination governs.
 
-The root can be anywhere. If a drive holds several people's archives, mark
-each person's directory, not the drive: marking `SSD/bob` leaves `SSD/alice`
-entirely alone (and she may mark hers, or not, independently). If nested
-markers ever exist, the nearest one above the destination governs.
+One honest gap: running `-I` while the drive is unmounted marks the
+mountpoint itself, defeating the guard for that path. The marker turns a
+hazard carried by every routine push into one requiring a single deliberate,
+unusual act; it does not make the hazard impossible.
 
-One honest gap: if you run `-I` while the drive is unmounted, you mark the
-mountpoint itself and the guard is defeated for that path. The marker turns
-a hazard carried by every routine push into one requiring a deliberate,
-unusual act — it does not make the hazard impossible.
+## The config file: `.sarchive.conf`
+
+Standing policy lives in a plain file at the source root (typically
+`~/.sarchive.conf`), discovered like a `.git` directory by walking up from
+the source. It is ordinary visible data in your tree — not hidden tool
+state — and it is archived along with everything else, so the archive
+records its own policy. One directive per line, `#` comments:
+
+```
+# ~/.sarchive.conf
+order bookmark          # default dispatch order: sorted | shuffle | bookmark
+verbose off             # default verbosity
+
+ignore .cache/          # rsync pattern: matches at any depth
+ignore .venv/
+ignore .global-venv/
+ignore .elan/
+ignore node_modules/
+ignore /snap/           # leading / anchors to the source top level only
+
+noversion .config       # kept current in the archive, but superseded
+noversion .local        # versions are NOT saved to older_versions
+```
+
+The three verbs, in decreasing strength:
+
+- **`ignore PATTERN`** — not archived at all. This is where regenerable
+  material belongs: virtualenvs, toolchains, caches, `node_modules`. Archive
+  the manifest that recreates them (`requirements.txt`), not the artifact.
+  (`.local` sometimes holds real application data — game saves, app
+  databases — so look before blanket-ignoring it.)
+- **`noversion NAME`** — the top-level entry `NAME` is archived and kept
+  current, but old versions are not retained. For trees like `.config`
+  whose files churn constantly (recently-used lists, window geometry) and
+  whose history is noise: you get a restorable settings snapshot without
+  polluting `older_versions` with junk versions on every run.
+- *(unlisted)* — archived with full version retention. This is the default
+  on purpose: a new directory appearing in your home is archived until you
+  say otherwise, never silently skipped.
+
+An unknown directive is a fatal error with a file:line message, not a guess.
+There is no `mirror`, no `delete`, and there never will be: a directive that
+erases archive content on the say-so of a config line written months ago is
+the exact failure this tool exists to prevent. If you ever need a true
+mirror of something, plain `rsync -a --delete` to a *non-archive* path
+already exists; it does not belong under the marker.
+
+Targeted runs obey the standing policy: `sarchive.sh ~/.config …` runs in
+noversion mode because the config says so; `sarchive.sh ~/.cache …` is
+refused outright, with a message naming the config line to change if you
+meant it.
+
+`-e PATTERN` remains for one-off exclusions on a single run.
 
 ## Usage
 
@@ -80,203 +128,171 @@ sarchive.sh [-v] [-c] [-n] [-s|-b] [-e PATTERN]... <source_dir> <dest_dir>
 | Flag | Effect |
 |------|--------|
 | `-I` | Initialise an archive root. One path, no other flags. |
-| `-v` | Verbose: per-file output and progress. |
+| `-v` | Verbose (or set `verbose on` in the config). |
 | `-c` | Compare by checksum instead of size+mtime. See below. |
 | `-n` | Dry run: report what would happen, change nothing. |
-| `-s` | Shuffle: process top-level directories in random order. |
-| `-b` | Bookmark: process top-level directories round-robin, resuming after the last completed directory of the previous `-b` run. |
-| `-e P`| Exclude pattern, repeatable. `-e .cache/` excludes `.cache` at any depth; `-e /Downloads/` excludes only the top-level `Downloads`. Patterns anchor to the source root and mean the same thing in every mode. |
+| `-s` / `-b` | Shuffle / bookmark order for this run, overriding the config. |
+| `-e P` | One-off exclude, repeatable. |
 | `-h` | Help. |
 
-The destination may be local or remote (`user@host:/path`); local and remote
-take the same code path throughout. The archive root must exist (and be
-marked); directories *below* the root are created as needed.
-
-### Examples
-
-```
-sarchive.sh -I /media/$USER/SSD/bob             # once, ever
-sarchive.sh -v ~ /media/$USER/SSD/bob/home      # whole home, when there's time
-sarchive.sh -v ~/Pictures /media/$USER/SSD/bob/home/Pictures   # ten minutes
-sarchive.sh -b ~ user@nas:/archive/bob/home     # round-robin, remote
-sarchive.sh -c -n ~ /media/$USER/SSD/bob/home   # audit (see below)
-```
+With standing policy in the config, the routine invocation is just
+`sarchive.sh <source> <dest>`. The destination may be local or remote
+(`user@host:/path`); both take the same code path. The archive root must
+exist and be marked; directories below it are created as needed.
 
 ## The path convention (load-bearing)
 
 Map sources to consistent root-relative destinations: `~` always to
-`bob/home`, and therefore `~/Pictures` always to `bob/home/Pictures`. Under
-this convention, a run on a subdirectory and a run on the whole home are
+`Dan/home`, and therefore `~/Pictures` always to `Dan/home/Pictures`. Under
+this convention a run on a subdirectory and a run on the whole home are
 **partial updates of the same tree** — files already archived compare equal
-and are skipped in milliseconds, so the runs compose and nothing is stored
-twice.
+and are skipped in milliseconds, so runs compose and nothing is stored
+twice. The tool cannot enforce the convention; only you can.
 
-The tool cannot enforce this convention; only you can. Archiving
-`~/Pictures` to `bob/home/Pictures` one month and to `bob/pics` the next
-creates two unrelated copies, and nothing will warn you.
-
-There is no saved position and no "resume state". A run always walks the
+There is no saved position and no resume state. A run always walks the
 whole source and compares each file against the archive; "picking up where
-it left off" is emergent — already-archived material costs a fast stat
-comparison and nothing more. Interrupt any run at any moment: the only cost
-is the re-comparison next time. A file interrupted mid-transfer resumes from
-its partial data (over a network) and partial data is quarantined in a
-hidden `.rsync-partial` directory — a truncated file never appears at a real
-archive path.
+it left off" is emergent — already-archived material costs a fast comparison
+and nothing more. Interrupt any run at any moment; a file interrupted
+mid-transfer resumes from its partial data (over a network), and partial
+data is quarantined in a hidden `.rsync-partial` directory, never left at a
+real archive path.
 
 ## Archive layout
 
 ```
-/media/$USER/SSD/bob/                    <- archive root
+/media/dan/SSD/Dan/                    <- archive root
 ├── .sarchive                          <- marker (from -I)
-├── home/                              <- your convention: ~ maps here
+├── home/
 │   ├── .bashrc
+│   ├── .sarchive.conf                 <- the policy, archived with the data
+│   ├── .config/…                      <- current copy (noversion)
 │   ├── Pictures/
 │   │   └── img.jpg                    <- current version
-│   └── Work/
-│       └── notes.txt
+│   └── Work/…
 └── older_versions/
-    ├── 2026-07-16T142305/             <- one run that superseded things
+    ├── 2026-07-16T142305/
     │   └── home/Pictures/img.jpg      <- the version that run replaced
     └── 2026-07-17T091412/
         └── home/Work/notes.txt
 ```
 
-Points worth noticing:
-
-- The store is anchored at the **root**, not at each run's destination.
-  Whether a version of `img.jpg` was superseded by a run on `~` or a run on
-  `~/Pictures`, it lands at the same root-relative address. The full history
-  of one file is `ls older_versions/*/home/Pictures/img.jpg`.
-- Run directories are created lazily: a run that supersedes nothing leaves
-  no directory.
-- Filenames are unmangled. Restoring an old version is `cp`.
+- The store is anchored at the **root**: whether a version of `img.jpg` was
+  superseded by a run on `~` or on `~/Pictures`, it lands at the same
+  root-relative address. One file's full history is
+  `ls older_versions/*/home/Pictures/img.jpg`.
+- Run directories are created lazily; a run that supersedes nothing leaves
+  no directory. Filenames are unmangled; restoring an old version is `cp`.
 - `du -sh older_versions/*` prices every run; `ls older_versions/<run>/`
   answers "what did that push replace?"
 
-## Ordering: default, `-s`, `-b`
+## Ordering: sorted, shuffle, bookmark
 
-By default a run is a single `rsync` invocation processing the source in
-one pass. This is the right mode when runs usually finish.
+With `order sorted` (and no `noversion` entries) a run is a single rsync
+pass — right when runs usually finish. If runs are usually *interrupted*,
+a fixed order starves the tail: churn-heavy, alphabetically early
+directories absorb each run's time budget. Two remedies, both dispatching
+one transfer per top-level directory:
 
-If your runs are usually *interrupted* — you archive when you have time and
-stop when you don't — a fixed processing order starves the tail: directories
-that churn constantly (a `Downloads/` is both alphabetically early and churn 
-frequently) absorb each run's time budget, and later directories are rarely
-reached. Two remedies, both of which split the run into one transfer per
-top-level directory:
-
-- **`-s` (shuffle)** randomises the order each run. Stateless; fairness is
-  statistical — no directory can starve because none has a position.
-- **`-b` (bookmark)** rotates deterministically. A cursor file at the run's
+- **shuffle** randomises the order each run. Stateless; no directory can
+  starve because none has a position.
+- **bookmark** rotates deterministically. A cursor file at the run's
   destination (`.sarchive-cursor`, one line, overwritten) records the last
-  *completed* top-level directory; the next `-b` run processes the full list
-  rotated to start just past it, wrapping around. Interrupted and completed
-  runs are the same case: the cycle simply continues across runs.
+  *completed* top-level directory; the next run processes the full list
+  rotated to start just past it, wrapping around, so interrupted and
+  completed runs alike continue one cycle.
 
-The two are mutually exclusive. In all three modes the *result of a
-completed run is identical* — ordering changes only which prefix survives an
-interruption.
-
-Properties of the cursor worth knowing:
-
-- It is **advisory**: it influences order, never coverage. Every `-b` run
-  still dispatches every top-level directory; skipping remains rsync's
-  comparison, exactly as in the other modes. A stale, corrupt, or deleted
-  cursor degrades to a suboptimal starting point — nothing can be missed.
-  It is always safe to delete.
-- It is per destination: archiving `~` to two drives are two independent
-  rotations.
-- The bookmark is a sort pivot, not a lookup: it still works if the
-  directory it names has since been renamed or deleted.
-- Rotation order is byte-order (`LC_ALL=C`) sorted, so capitalised names
-  come before lowercase ones (`Work` before `bin`). This is deliberate:
-  the order must be identical across runs and machines.
-- Dry runs (`-n`) rotate from the cursor but never write it.
-- Fairness in `-s`/`-b` is top-level only. If the churn is inside one giant
-  directory, target that subtree directly — the root-anchored store makes
-  such runs free.
+In all modes the *result of a completed run is identical*; ordering changes
+only which prefix survives an interruption. The cursor is **advisory**: it
+influences order, never coverage — every run still dispatches every entry,
+and a stale, corrupt, or deleted cursor degrades to a suboptimal starting
+point. It is always safe to delete. It is per destination; the bookmark is
+a sort pivot, not a lookup, so it survives the named directory being renamed
+or deleted; rotation order is byte-order (`LC_ALL=C`), so capitalised names
+sort before lowercase (`Work` before `bin`) — deliberate, for cross-run
+determinism. Dry runs rotate from the cursor but never write it. Fairness
+is top-level only: if the churn is inside one giant directory, target that
+subtree directly.
 
 ## `-c`: change detection, not verification
 
-By default rsync considers a file unchanged when size and mtime both match.
-`-c` computes checksums for files whose sizes match, catching the narrow
-case where content changed but size and mtime did not (restores, `cp -p`,
-`tar -x`, coarse filesystem timestamps). The cost is a full read of both
-trees; that is why it is a flag and not the default.
+By default rsync treats a file as unchanged when size and mtime both match.
+`-c` checksums files whose sizes match, catching content changes that moved
+neither size nor mtime (restores, `cp -p`, `tar -x`, coarse timestamps).
+It reads both trees in full — hence a flag, not the default.
 
-`-c` is *not* transfer verification — none is needed. rsync itself
-checksums every transferred file end-to-end (sender and receiver compare a
-whole-file hash; a mismatch triggers a retry and then a hard error, exit
-code 23, which this script propagates as a failure). What rsync verifies is
-the transfer, not the medium: it does not re-read the destination disk after
-writing. For that, see the audit below.
-
-## Auditing the archive
+Transfer verification needs no flag: rsync checksums every transferred file
+end-to-end and retries on mismatch. What it verifies is the transfer, not
+the medium — it does not re-read the destination disk afterward. For that:
 
 ```
-sarchive.sh -c -n <source> <dest>
+sarchive.sh -c -n <source> <dest>       # audit
 ```
 
-`-c` forces a full read of the archived copies from disk; `-n` guarantees
-nothing changes. Anything reported as needing transfer is a file whose
-archived copy no longer matches the source — this catches silent corruption
-(bitrot, a failing drive) that no mtime-based comparison can see. Add `-v`
-to list the differing files.
-
-The inherent limit: the audit compares against the source, so it can only
-audit files still *present* on the source — precisely not the ones you
-offloaded and deleted, which are the reason the archive exists. Verifying
-those would require checksums recorded at push time (a manifest), which is a
-real feature with real costs and failure modes of its own, and is
-deliberately out of scope. Know the limit; don't mistake the audit for more
-than it is.
+forces a full read of the archived copies from disk while changing nothing;
+anything reported as needing transfer is an archived copy that no longer
+matches the source — silent corruption no mtime comparison can see. The
+inherent limit: the audit compares against the source, so it cannot check
+files you have already offloaded and deleted — precisely the archive's most
+important contents. Verifying those would need checksums recorded at push
+time (a manifest): a real feature with real costs, deliberately out of
+scope. Know the limit.
 
 ## Pruning
 
-The store grows forever by design; when you eventually want space back,
-run directories make pruning a filesystem operation, not a tool feature:
+The store grows forever by design. When you want space back, run
+directories make pruning a filesystem operation, not a tool feature:
 
 ```
-rm -rf /media/$USER/SSD/bob/older_versions/2024-*
+rm -rf /media/$USER/SSD/Dan/older_versions/2024-*
 ```
 
-removes every superseded version from 2024 while touching nothing current.
+## Filesystem realities (exFAT and friends)
+
+External drives shared with Windows are typically exFAT, which cannot
+represent symlinks, Unix permissions and ownership, or hard links. The
+tool's stance:
+
+- **Symlinks, permissions, attributes** that the destination cannot store
+  produce rsync per-file errors and exit code 23. This is reported as a
+  **warning**, not a failure: the errors describe data the filesystem
+  genuinely cannot hold, and everything representable was transferred.
+- **Hard links are not preserved anywhere** (`--hard-links` is deliberately
+  absent). On exFAT it makes rsync abort fatally mid-run; and hardlinked-ness
+  is metadata that cannot survive the tool's own promise of plain files
+  restorable to any filesystem. Hardlinked sets (e.g. `.elan/bin`) archive
+  as independent copies: every byte present, link structure lost. If a
+  hardlink-heavy tree is really just a reinstallable toolchain, `ignore`
+  it and archive its manifest instead.
+
+Files vanishing from the source mid-run (normal on a live home directory)
+are likewise a warning (rsync code 24). Any other rsync error aborts the
+run and propagates rsync's exit code.
 
 ## Notes, edges, and limits
 
-- **Moved files.** The tool addresses files by path. Move a file locally
-  and the archive gains a copy at the new path while keeping the old one —
-  by design, since deletions never propagate. Duplicates on the archive are
+- **Moved files.** The tool addresses files by path: move a file locally and
+  the archive gains a copy at the new path while keeping the old — by
+  design, since deletions never propagate. Duplicates on the archive are
   found and adjudicated with a separate tool (e.g. `dupfind`), by hand.
-  Content-addressed tools (restic, borg) dissolve this entirely, at the
-  price of an opaque repository that requires their software to read;
-  this tool's premise is that plain browsable files are worth that price.
+  Content-addressed tools (restic, borg) dissolve this at the price of an
+  opaque repository; this tool's premise is that plain browsable files are
+  worth that price.
 - **Remote costs.** Marker discovery costs one ssh round trip per ancestor
-  level tried; `-s`/`-b` open one connection per top-level directory; `-b`
-  adds one per completed directory for the cursor write. All of it collapses
-  to near-zero with ssh connection multiplexing (`ControlMaster`) in your
-  ssh config; the script will not manage your ssh config for you.
-- **Vanished files.** Files disappearing from the source mid-run (normal on
-  a live home directory) produce a warning, not a failure. Any other rsync
-  error aborts the run and propagates rsync's exit code.
-- **`-a` fidelity.** Ownership, permissions, times, symlinks and (via
-  `--hard-links`) hard-link structure are preserved. ACLs and extended
-  attributes are not; they fail unpredictably on foreign filesystems and are
-  out of scope.
-- **Symlinked directories** at the source's top level are archived as
-  symlinks in every mode (never followed).
+  level; split dispatch opens one connection per top-level directory;
+  bookmark adds one per completed entry. All near-zero with ssh
+  `ControlMaster` multiplexing.
+- **Symlinked directories** at the source top level are archived as symlinks
+  in every mode, never followed.
 - **Archiving an archive.** If the source itself contains `.sarchive` or
-  `.sarchive-cursor` at its top level, they will overwrite the
-  destination's. Harmless but confusing; avoid.
-- **Local paths** are best given absolute (or home-relative); marker
-  discovery for a relative destination stops at its first component.
-- **Migrating from the old sbackup layout.** Files versioned by the old
-  suffix scheme (`name~YYYY-MM-DD-uuid`) coexist with run directories
-  without collision. To keep one layout per directory, a one-time manual
-  move suffices: `mkdir older_versions/pre-2026 && mv older_versions/*~* older_versions/pre-2026/`
-  (adjust the glob to your actual names). No migration code exists or is
-  needed.
+  `.sarchive-cursor` at its top level they will overwrite the destination's.
+  Harmless but confusing; avoid.
+- **Local paths** are best given absolute or home-relative; marker discovery
+  for a relative destination stops at its first path component.
+- **Migrating from the old sbackup layout.** Old suffix-versioned files
+  (`name~YYYY-MM-DD-uuid`) coexist with run directories without collision.
+  For one layout per directory:
+  `mkdir older_versions/pre-2026 && mv older_versions/*~* older_versions/pre-2026/`
+  (adjust the glob). No migration code exists or is needed.
 
 ## License
 
