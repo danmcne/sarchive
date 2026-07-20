@@ -35,9 +35,9 @@ software beyond a file manager or `cp`.
 ## Quick start
 
 ```
-sarchive.sh -I /media/$USER/SSD/Dan        # once per archive, ever
+sarchive.sh -I /media/$USER/SSD/bob        # once per archive, ever
 $EDITOR ~/.sarchive.conf                   # standing policy (see below)
-sarchive.sh ~ /media/$USER/SSD/Dan/home    # routine push: no flags needed
+sarchive.sh ~ /media/$USER/SSD/bob/home    # routine push: no flags needed
 ```
 
 ## Initialising an archive root
@@ -56,7 +56,7 @@ of quietly filling your local disk), **a typo'd destination**, and **the
 wrong directory**.
 
 The root can be anywhere. On a shared drive, mark each person's directory,
-not the drive: marking `SSD/Dan` leaves `SSD/Mary` alone. If nested markers
+not the drive: marking `SSD/bob` leaves `SSD/alice` alone. If nested markers
 ever exist, the nearest one above the destination governs.
 
 One honest gap: running `-I` while the drive is unmounted marks the
@@ -143,7 +143,7 @@ exist and be marked; directories below it are created as needed.
 ## The path convention (load-bearing)
 
 Map sources to consistent root-relative destinations: `~` always to
-`Dan/home`, and therefore `~/Pictures` always to `Dan/home/Pictures`. Under
+`bob/home`, and therefore `~/Pictures` always to `bob/home/Pictures`. Under
 this convention a run on a subdirectory and a run on the whole home are
 **partial updates of the same tree** — files already archived compare equal
 and are skipped in milliseconds, so runs compose and nothing is stored
@@ -160,7 +160,7 @@ real archive path.
 ## Archive layout
 
 ```
-/media/dan/SSD/Dan/                    <- archive root
+/media/bob/SSD/bob/                    <- archive root
 ├── .sarchive                          <- marker (from -I)
 ├── home/
 │   ├── .bashrc
@@ -243,7 +243,7 @@ The store grows forever by design. When you want space back, run
 directories make pruning a filesystem operation, not a tool feature:
 
 ```
-rm -rf /media/$USER/SSD/Dan/older_versions/2024-*
+rm -rf /media/$USER/SSD/bob/older_versions/2024-*
 ```
 
 ## Filesystem realities (exFAT and friends)
